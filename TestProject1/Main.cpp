@@ -15,6 +15,10 @@
 //Ширина и высота окна
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
+//Количество одновременно обраматываемых кадров
+const int MAX_FRAMES_IN_FLIGHT = 2;
+
+
 
 
 //Перечисление слоёв валидации, которые мы хотим подключить
@@ -93,7 +97,18 @@ private:
     VkFormat swapChainImageFormat;  //Формат изображений
     VkExtent2D swapChainExtent; //Разрешение изображений
     std::vector<VkImageView> swapChainImageViews;   //Описание image
+    VkRenderPass renderPass;    //Объект прохода рендера
     VkPipelineLayout pipelineLayout;    //uniform глобальные переменные
+    VkPipeline graphicsPipeline;    //Графический конвейер
+    std::vector<VkFramebuffer> swapChainFramebuffers;   //Фреймбуфер
+    VkCommandPool commandPool;  //Пул команд
+    std::vector<VkCommandBuffer> commandBuffers;    //Буфер команд
+    std::vector<VkSemaphore> imageAvailableSemaphores;    //Список семафор, image готов к рендерингу
+    std::vector<VkSemaphore> renderFinishedSemaphores;    //Список семафор, рендеринг image закончен
+    std::vector<VkFence> inFlightFences;    //Барьер
+    std::vector<VkFence> imagesInFlight;    //Image в обработке
+    size_t currentFrame = 0;    //Индекс текущего кадра
+
 
     //Список требуемых расширений
     const std::vector<const char*> deviceExtensions = {
@@ -135,10 +150,133 @@ private:
         createLogicalDevice();  //Создание логического устройства
         createSwapChain();  //Создание swapchain
         createImageViews(); //Создание Image view
-        createGraphicsPipeline();   //
+        createRenderPass(); //Создания обхода рендера
+        createGraphicsPipeline();   //Создание конвеера
+        createFramebuffers();    //Создание фреймбуфера
+        createCommandPool();    //Создание пула команд
+        createCommandBuffers();  //Создание буфера команд
+        createSyncObjects(); //Создание барьеров и семафоров для синхронизации
+    }
+    //Синхронизация
+    void createSyncObjects() {
+        //Размер списка семафор и барьеров
+        imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);  //Семафор
+        renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+        inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);    //Барьер
+        imagesInFlight.resize(swapChainImages.size(), VK_NULL_HANDLE);  //Image в обработке
+
+        VkSemaphoreCreateInfo semaphoreInfo{};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        //Создание семафоров и барьеров
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
+                vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
+                vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
+
+                throw std::runtime_error("failed to create synchronization objects for a frame!");
+            }
+        }
     }
 
-    //Создание конвеера 
+    //Буфер команд
+    void createCommandBuffers() {
+        commandBuffers.resize(swapChainFramebuffers.size());    //Выделение места
+
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool = commandPool;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount = (uint32_t)commandBuffers.size();
+        //Создание буфера команд
+        if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data()) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate command buffers!");    
+        }
+        //Запись в буферы команд
+        for (size_t i = 0; i < commandBuffers.size(); i++) {
+            VkCommandBufferBeginInfo beginInfo{};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = 0; // Optional
+            beginInfo.pInheritanceInfo = nullptr; // Optional
+            //Начало записи буфера команд
+            if (vkBeginCommandBuffer(commandBuffers[i], &beginInfo) != VK_SUCCESS) {
+                throw std::runtime_error("failed to begin recording command buffer!");
+            }
+
+            //Начало прохода рендера
+            VkRenderPassBeginInfo renderPassInfo{}; //Параметры прохода рендера
+            renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            renderPassInfo.renderPass = renderPass;
+            renderPassInfo.framebuffer = swapChainFramebuffers[i];  //Фреймбуфер
+            //Область рендеринга
+            renderPassInfo.renderArea.offset = { 0, 0 };
+            renderPassInfo.renderArea.extent = swapChainExtent;
+            //Параметры очистки буфера
+            VkClearValue clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
+            renderPassInfo.clearValueCount = 1;
+            renderPassInfo.pClearValues = &clearColor;
+            //Начало прохода рендера
+            vkCmdBeginRenderPass(commandBuffers[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+            //Рисование
+            vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);    //Подключение графического конвейера
+            vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);   //Рисование треугольника
+            vkCmdEndRenderPass(commandBuffers[i]);  //Конец прохода рендера
+            //Завершение записи буфера команд
+            if (vkEndCommandBuffer(commandBuffers[i]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to record command buffer!");
+            }
+           
+        }
+
+
+    }
+
+    //Пул команд
+    void createCommandPool() {
+        QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+
+        VkCommandPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
+        poolInfo.flags = 0; // Optional
+        //Создание пула команд
+        if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create command pool!");
+        }
+    }
+
+    //Создание фреймбуфера
+    void createFramebuffers() {
+        swapChainFramebuffers.resize(swapChainImageViews.size());   //Выделение места в контейнере
+        //Обход всех swap chain и создание в них фреймбуферов
+        for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+            VkImageView attachments[] = {
+                swapChainImageViews[i]
+            };
+
+            VkFramebufferCreateInfo framebufferInfo{};
+            framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            framebufferInfo.renderPass = renderPass;
+            framebufferInfo.attachmentCount = 1;
+            framebufferInfo.pAttachments = attachments;
+            framebufferInfo.width = swapChainExtent.width;
+            framebufferInfo.height = swapChainExtent.height;
+            framebufferInfo.layers = 1;
+
+            if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &swapChainFramebuffers[i]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create framebuffer!");
+            }
+        }
+
+    }
+
+    //Создание конвейера 
     void createGraphicsPipeline() {
         //Загружаем байт код шейдеров
         auto vertShaderCode = readFile("shaders/vert.spv"); //Шейдер вершин
@@ -153,6 +291,7 @@ private:
         //Указание шейдерного модуля
         vertShaderStageInfo.module = vertShaderModule;
         vertShaderStageInfo.pName = "main";
+        vertShaderStageInfo.pSpecializationInfo = nullptr;
 
         //Аналогично для фрагментного шейдера
         VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
@@ -160,11 +299,10 @@ private:
         fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
         fragShaderStageInfo.module = fragShaderModule;
         fragShaderStageInfo.pName = "main";
+        fragShaderStageInfo.pSpecializationInfo = nullptr;
 
         VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };  //Массив с созданными структурами
 
-        //vkDestroyShaderModule(device, fragShaderModule, nullptr);   //Уничтожение шейдерных модулей 
-        //vkDestroyShaderModule(device, vertShaderModule, nullptr);
         
         //Непрограммируемые этапы
         //Входные данные вершин
@@ -240,6 +378,17 @@ private:
         colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
         colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD; // Optional
 
+        VkPipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.logicOpEnable = VK_FALSE;
+        colorBlending.logicOp = VK_LOGIC_OP_COPY; // Optional
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+        colorBlending.blendConstants[0] = 0.0f; // Optional
+        colorBlending.blendConstants[1] = 0.0f; // Optional
+        colorBlending.blendConstants[2] = 0.0f; // Optional
+        colorBlending.blendConstants[3] = 0.0f; // Optional
+
         //Динамическое состояние
         VkDynamicState dynamicStates[] = {
             VK_DYNAMIC_STATE_VIEWPORT,
@@ -265,6 +414,91 @@ private:
         if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create pipeline layout!");
         }
+
+        //Объединение объектов и структур, создание графического конвейера
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        //Шейдерные модули
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        //Непрограммируемые этапы
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = nullptr; // Optional
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = nullptr; // Optional
+        //Проход
+        pipelineInfo.layout = pipelineLayout;
+        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.subpass = 0;
+        //
+        pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
+        pipelineInfo.basePipelineIndex = -1; // Optional
+
+        //Создание конвейера
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create graphics pipeline!");
+        }
+        VkPipeline graphicsPipeline;
+        //Уничтожение шейдерных модулей
+        //vkDestroyShaderModule(device, fragShaderModule, nullptr);   //Уничтожение шейдерных модулей 
+        //vkDestroyShaderModule(device, vertShaderModule, nullptr);
+    }
+
+    //Обход рендера
+    void createRenderPass() {
+        //Настройка буферов
+        //Цветовой буфер
+        VkAttachmentDescription colorAttachment{};
+        colorAttachment.format = swapChainImageFormat;  //Соответствие формату из swap chain
+        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        //Данные в буфере цвета и глубины
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;   //Очищается в проходе рендера, изменить
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; //Сохраняется в память для дальнейшего рендера
+        //Данные в буфере трафарета, не используем
+        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        //Текстуры и фреймбуферы
+        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;  //До рендера
+        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;  //После рендера
+
+        //Подпроход
+        VkAttachmentReference colorAttachmentRef{};
+        colorAttachmentRef.attachment = 0;
+        colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &colorAttachmentRef;
+
+        //Проход рендера
+        VkRenderPassCreateInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        renderPassInfo.attachmentCount = 1;
+        renderPassInfo.pAttachments = &colorAttachment;
+        renderPassInfo.subpassCount = 1;
+        renderPassInfo.pSubpasses = &subpass;
+
+        //Зависимости подпроходов
+        VkSubpassDependency dependency{};
+        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.srcAccessMask = 0;
+        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        renderPassInfo.dependencyCount = 1;
+        renderPassInfo.pDependencies = &dependency;
+
+        if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create render pass!");
+        }
+
+
+
     }
 
     //Создание шейдерного модуля
@@ -280,6 +514,7 @@ private:
             throw std::runtime_error("failed to create shader module!");
         }
         //Нужно освободить буфер code
+        return shaderModule;
     }
 
     //Создание Image view
@@ -547,16 +782,84 @@ private:
         return indices;
     }
 
+    void drawFrame() {
+        //Ожидание создания предыдущего кадра
+        vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+
+        //Получение image из swap chain
+        uint32_t imageIndex;
+        vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+        //Проверка предыдущего и текущего image
+        if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+            vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+        }
+        //Отметка участия image в текущем кадре
+        imagesInFlight[imageIndex] = inFlightFences[currentFrame];
+
+        //Запуск соответствующего буфера команд для этого image
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        //Ожидаемые семафоры
+        VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] }; //Список семафор, которые необходимо дождаться 
+        VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };  //Список флагов ожидания
+        submitInfo.waitSemaphoreCount = 1;
+        submitInfo.pWaitSemaphores = waitSemaphores;
+        submitInfo.pWaitDstStageMask = waitStages;
+        //Выбор отправляемых буферов команд
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffers[imageIndex];
+        //Список семафор, уведомляющих о завершении
+        VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = signalSemaphores;
+        //Отправка буфера команд в графическую очередь
+        vkResetFences(device, 1, &inFlightFences[currentFrame]);    //Сброс барьера
+        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to submit draw command buffer!");
+        }
+
+        //Возвращение image в swap chain для вывода на экран
+        VkPresentInfoKHR presentInfo{};
+        presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        //Ожидаемые семафоры
+        presentInfo.waitSemaphoreCount = 1;
+        presentInfo.pWaitSemaphores = signalSemaphores;
+        //Указание image и swap chain 
+        VkSwapchainKHR swapChains[] = { swapChain };
+        presentInfo.swapchainCount = 1;
+        presentInfo.pSwapchains = swapChains;
+        presentInfo.pImageIndices = &imageIndex;
+        //Массив для проверки каждого swap chain
+        presentInfo.pResults = nullptr; // Optional
+        //Отправка запроса на отображение image в swap chain
+        vkQueuePresentKHR(presentQueue, &presentInfo);
+
+        currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;   //Переход к следующему кадру
+    }
+
     //Главный цикл
     void mainLoop() {
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
+            drawFrame();
         }
+        vkDeviceWaitIdle(device);   //Ожидание завершения всех логических операций устройства
     }
 
     //Освобождение ресурсов
     void cleanup() {
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);   //Уничтожение графического конвейера 
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);   //Уничтожение семафоров
+            vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+            vkDestroyFence(device, inFlightFences[i], nullptr); //Уничтожение барьеров
+        }   
+        vkDestroyCommandPool(device, commandPool, nullptr); //Уничтожение пула команд
+        for (auto framebuffer : swapChainFramebuffers) {
+            vkDestroyFramebuffer(device, framebuffer, nullptr); //Уничтожение фреймбуферов
+        }   
+        vkDestroyPipeline(device, graphicsPipeline, nullptr); //Уничтожение графического конвейера
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);   //Уничтожение конвейера 
+        vkDestroyRenderPass(device, renderPass, nullptr);   //Уничтожение прохода рендера
         for (auto imageView : swapChainImageViews) {
             vkDestroyImageView(device, imageView, nullptr); //Уничтожение image view
         }
