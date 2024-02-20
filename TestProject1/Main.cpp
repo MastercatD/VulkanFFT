@@ -11,6 +11,11 @@
 #include <cstdint> // Necessary for UINT32_MAX
 #include <algorithm>
 #include <fstream>
+#include <glm/glm.hpp>
+#define GLM_FORCE_RADIANS
+#include <glm/gtc/matrix_transform.hpp> //Для вращения
+#include <chrono>   //Для вращения
+#include <array>
 
 //Ширина и высота окна
 const uint32_t WIDTH = 800;
@@ -84,6 +89,44 @@ public:
     }
 
 private:
+    //Структура вершины
+    struct Vertex {
+        glm::vec2 pos;
+        glm::vec3 color;
+        //Информация о передаче данных в вершинный шейдер
+        static VkVertexInputBindingDescription getBindingDescription() {
+            VkVertexInputBindingDescription bindingDescription{};
+            bindingDescription.binding = 0; //Номер привязки в массиве
+            bindingDescription.stride = sizeof(Vertex); //Расстояние между элементами данных
+            bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX; //Условия перехода к следующему элементу
+
+            return bindingDescription;
+        }
+
+        //Интерпретация переданных данных
+        static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions() {
+            std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+            //Позиция
+            attributeDescriptions[0].binding = 0;   //Привязка поступающих данных в вершину
+            attributeDescriptions[0].location = 0;  //Директива location в вершинном шейдере
+            attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;  //Тип данных атрибута
+            attributeDescriptions[0].offset = offsetof(Vertex, pos);    //Смещение данных атрибута от начала считанного для вершины куска
+            //Цвет
+            attributeDescriptions[1].binding = 0;
+            attributeDescriptions[1].location = 1;
+            attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+            attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+            return attributeDescriptions;
+        }
+    };
+    //Структура uniform-buffer
+    struct UniformBufferObject {
+        glm::mat4 model;
+        glm::mat4 view;
+        glm::mat4 proj;
+    };
+
     VkInstance instance;    //Дескриптор экземпляра для инициализации библиотеки Vulkan
     VkDebugUtilsMessengerEXT debugMessenger;    //Дескриптор callback функции
     GLFWwindow* window;   //Окно  
@@ -98,6 +141,7 @@ private:
     VkExtent2D swapChainExtent; //Разрешение изображений
     std::vector<VkImageView> swapChainImageViews;   //Описание image
     VkRenderPass renderPass;    //Объект прохода рендера
+    VkDescriptorSetLayout descriptorSetLayout;  //Привязки layout дескрипторов
     VkPipelineLayout pipelineLayout;    //uniform глобальные переменные
     VkPipeline graphicsPipeline;    //Графический конвейер
     std::vector<VkFramebuffer> swapChainFramebuffers;   //Фреймбуфер
@@ -108,7 +152,23 @@ private:
     std::vector<VkFence> inFlightFences;    //Барьер
     std::vector<VkFence> imagesInFlight;    //Image в обработке
     size_t currentFrame = 0;    //Индекс текущего кадра
-
+    VkBuffer vertexBuffer;  //Буфер вершин
+    VkDeviceMemory vertexBufferMemory;  //Дескриптор выделенной памяти для буфера вершин
+    VkBuffer indexBuffer;   //Индексный буфер
+    VkDeviceMemory indexBufferMemory;   //Дескриптор выделенной памяти для индексного буфера
+    std::vector<VkBuffer> uniformBuffers;   //uniform-буфер
+    std::vector<VkDeviceMemory> uniformBuffersMemory;   //Память для uniform-буфера
+    VkDescriptorPool descriptorPool;    //Пул дескрипторов
+    std::vector<VkDescriptorSet> descriptorSets;    //Сеты дескрипторов
+    const std::vector<Vertex> vertices = {  //Данные вершин
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+    };
+    const std::vector<uint16_t> indices = { //Индексы вершин
+    0, 1, 2, 2, 3, 0
+    };
 
     //Список требуемых расширений
     const std::vector<const char*> deviceExtensions = {
@@ -151,12 +211,266 @@ private:
         createSwapChain();  //Создание swapchain
         createImageViews(); //Создание Image view
         createRenderPass(); //Создания обхода рендера
+        createDescriptorSetLayout(); //Создание layout дескриптора
         createGraphicsPipeline();   //Создание конвеера
         createFramebuffers();    //Создание фреймбуфера
         createCommandPool();    //Создание пула команд
+        createVertexBuffer();    //Создание буфера вершин
+        createUniformBuffers(); //Создание uniform-буфера
+        createDescriptorPool(); //Создание пула дескрипторов
+        createDescriptorSets(); //Выделение сетов дескрипторов
+        createIndexBuffer();    //Создание индексного буфера 
         createCommandBuffers();  //Создание буфера команд
         createSyncObjects(); //Создание барьеров и семафоров для синхронизации
     }
+
+    //Сеты дескрипторов
+    void createDescriptorSets() {
+        std::vector<VkDescriptorSetLayout> layouts(swapChainImages.size(), descriptorSetLayout);
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = descriptorPool;  //Указание пула дескрипторов
+        allocInfo.descriptorSetCount = static_cast<uint32_t>(swapChainImages.size());   //Количество выделяемых сетов
+        allocInfo.pSetLayouts = layouts.data(); //layout дескрипторов
+        //Создание сетов дескрипторов
+        descriptorSets.resize(swapChainImages.size());
+        if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data()) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate descriptor sets!");
+        }
+        //Заполнение сетов дескрипторов
+        for (size_t i = 0; i < swapChainImages.size(); i++) {
+            //Заполняемая область буфера
+            VkDescriptorBufferInfo bufferInfo{};
+            bufferInfo.buffer = uniformBuffers[i];
+            bufferInfo.offset = 0;
+            bufferInfo.range = sizeof(UniformBufferObject);
+
+            VkWriteDescriptorSet descriptorWrite{};
+            descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrite.dstSet = descriptorSets[i]; //Сет дескрипторов
+            descriptorWrite.dstBinding = 0; //Привязка
+            descriptorWrite.dstArrayElement = 0;
+            descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; //Тип дескриптора
+            descriptorWrite.descriptorCount = 1; //Количество элементов, которые необходимо обновить
+            descriptorWrite.pBufferInfo = &bufferInfo;  //Для дескрипторов, ссылающихся на данные буфера
+            descriptorWrite.pImageInfo = nullptr; //Для дескрипторов, ссылающихся на данные image
+            descriptorWrite.pTexelBufferView = nullptr; //Для дескрипторов, ссылающихся на данные buffer view
+            vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);    //Обновление настроек сета дескрипторов
+        }
+
+    
+    }
+
+    //Пул дескрипторов
+    void createDescriptorPool() {
+        //Описание пула дескрипторов
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;  //Тип дескрипторов
+        poolSize.descriptorCount = static_cast<uint32_t>(swapChainImages.size());   //Количество дескрипторов
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = static_cast<uint32_t>(swapChainImages.size());   //Маскимальное количество сетов дескрипторов
+        //Создание пула дескрипторов
+        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create descriptor pool!");
+        }
+
+    
+    }
+
+    //uniform-буфер
+    void createUniformBuffers() {
+        VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+
+        uniformBuffers.resize(swapChainImages.size());
+        uniformBuffersMemory.resize(swapChainImages.size());
+
+        for (size_t i = 0; i < swapChainImages.size(); i++) {
+            createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uniformBuffers[i], uniformBuffersMemory[i]);
+        }
+    }
+    
+    //Layout дескриптор
+    void createDescriptorSetLayout() {
+        //Описание привязки
+        VkDescriptorSetLayoutBinding uboLayoutBinding{};
+        uboLayoutBinding.binding = 0;   //
+        uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;    //Тип дескриптора
+        uboLayoutBinding.descriptorCount = 1;   //Количество значений в дескрипторе
+
+        uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;   //Этапы шейдера, где упоминается дескриптор
+        uboLayoutBinding.pImmutableSamplers = nullptr; // Optional  
+
+
+        //Описание массива привязок
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = &uboLayoutBinding;
+        //Создание массива привязок
+        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create descriptor set layout!");
+        }
+    }
+
+
+    
+    //Создание буфера
+    void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory) {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = size; //Размер буфера
+        bufferInfo.usage = usage;   //Цели буфера
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; //Доступ семей к буферу
+        //Создание юуфера
+        if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create buffer!");
+        }
+        //Подготовка структур для выделений памяти
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+        //Выделение памяти
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &bufferMemory) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate buffer memory!");
+        }
+        //Привязка буфера к выделенной памяти
+        vkBindBufferMemory(device, buffer, bufferMemory, 0);
+
+
+    }
+
+    //Индексный буфер
+    void createIndexBuffer() {
+        VkDeviceSize bufferSize = sizeof(indices[0]) * indices.size();
+
+        //Создание промежуточного буфера
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+
+        //Запись в буфер
+        void* data;
+        vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
+        memcpy(data, indices.data(), (size_t)bufferSize);
+        vkUnmapMemory(device, stagingBufferMemory);
+
+        //Создание индексного буфера
+        createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, indexBuffer, indexBufferMemory);
+        //Копирование
+        copyBuffer(stagingBuffer, indexBuffer, bufferSize);
+        //Уничтожение промежуточного буфера
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingBufferMemory, nullptr);
+    }
+
+    //Буфер вершин
+    void createVertexBuffer() {
+        /*
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = sizeof(vertices[0]) * vertices.size();    //Размер буфера
+        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;   //Цели буфера
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; //Доступ семей к буферу
+        //Создание буфера
+        if (vkCreateBuffer(device, &bufferInfo, nullptr, &vertexBuffer) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create vertex buffer!");
+        }
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(device, vertexBuffer, &memRequirements);
+        //Подготовка структуры для выделение памяти
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        //Выделение памяти
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &vertexBufferMemory) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate vertex buffer memory!");
+        }
+        //Привязка буфера памяти к выделенной памяти
+        vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+        */
+        //Создание вершинного буфера
+        VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+
+        VkBuffer stagingBuffer; //Промежуточный буфер
+        VkDeviceMemory stagingBufferMemory; //Память промежуточного буфера
+        
+        //Создание промежуточного буфера
+        createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+        //Заполнение промежуточного буфера
+        void* data;
+        vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);  //Получение доступа к памяти
+        memcpy(data, vertices.data(), (size_t)bufferSize);  //Копирование данных о вершинах в вершинный буфер
+        vkUnmapMemory(device, stagingBufferMemory);  //Отсоединение от памяти
+
+        //Создание буфера вершин 
+        createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertexBuffer, vertexBufferMemory);
+
+        //Копирование данных из промежуточного буфера в вершинный
+        copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+        vkDestroyBuffer(device, stagingBuffer, nullptr);    //Уничтожение промежуточного буфера
+        vkFreeMemory(device, stagingBufferMemory, nullptr); //Освобождение памяти промежуточного буфера
+        
+    }
+    
+    //Копирование буфера
+    void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
+        //Создание буфера команд
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandPool = commandPool;
+        allocInfo.commandBufferCount = 1;
+
+        VkCommandBuffer commandBuffer;
+        vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        //Запись в буфер команд
+        vkBeginCommandBuffer(commandBuffer, &beginInfo);
+        //Копирование
+        VkBufferCopy copyRegion{};
+        copyRegion.srcOffset = 0; // Optional
+        copyRegion.dstOffset = 0; // Optional
+        copyRegion.size = size;
+        vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+        //Конец записи
+        vkEndCommandBuffer(commandBuffer);
+        //Запуск буфера команд
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+
+        vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(graphicsQueue); //Ожидание выполнения
+        vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);   //Уничтожение буфера команд
+
+    }
+
+    //Определение требований к типу памяти
+    uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+        //Доступные типы памяти
+        VkPhysicalDeviceMemoryProperties memProperties;
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+            if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+                return i;
+            }
+        }
+        throw std::runtime_error("failed to find suitable memory type!");
+
+    }
+
     //Синхронизация
     void createSyncObjects() {
         //Размер списка семафор и барьеров
@@ -225,7 +539,15 @@ private:
 
             //Рисование
             vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);    //Подключение графического конвейера
-            vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);   //Рисование треугольника
+            
+            VkBuffer vertexBuffers[] = { vertexBuffer };    //Привязка буфера вершин перед отрисовкой
+            VkDeviceSize offsets[] = { 0 };
+            vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, vertexBuffers, offsets);    //Привязка буфера вершин
+            vkCmdBindIndexBuffer(commandBuffers[i], indexBuffer, 0, VK_INDEX_TYPE_UINT16);  //Привязка индексного буфера
+            vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[i], 0, nullptr);  //Привязка сета дескрипторов
+            
+            vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);  //Рисование с индексного буфера
+
             vkCmdEndRenderPass(commandBuffers[i]);  //Конец прохода рендера
             //Завершение записи буфера команд
             if (vkEndCommandBuffer(commandBuffers[i]) != VK_SUCCESS) {
@@ -306,13 +628,17 @@ private:
         
         //Непрограммируемые этапы
         //Входные данные вершин
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
         //Описание формата вершин
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+
+
         vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertexInputInfo.vertexBindingDescriptionCount = 0;
-        vertexInputInfo.pVertexBindingDescriptions = nullptr; // Optional
-        vertexInputInfo.vertexAttributeDescriptionCount = 0;
-        vertexInputInfo.pVertexAttributeDescriptions = nullptr; // Optional
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
         //Выбор геометрии
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -350,7 +676,7 @@ private:
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;  //Способ генерации фрагментов
         rasterizer.lineWidth = 1.0f;    //Толщина отрезков
         rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;    //Тип сечения
-        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE; //Порядок обхода вершин
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; //Порядок обхода вершин
         //Параметры глубины, выключены
         rasterizer.depthBiasEnable = VK_FALSE;
         rasterizer.depthBiasConstantFactor = 0.0f; // Optional
@@ -400,17 +726,15 @@ private:
         dynamicState.dynamicStateCount = 2;
         dynamicState.pDynamicStates = dynamicStates;
 
-        //Глобальные переменные для шейдеров
-        VkPipelineLayout pipelineLayout;
 
         //Константы для шейдеров
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = 0; // Optional
-        pipelineLayoutInfo.pSetLayouts = nullptr; // Optional
+        pipelineLayoutInfo.setLayoutCount = 1; //Количество layout дескрипторов
+        pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout; //Используемые шейдерами layout дескрипторы
         pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
         pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
-
+        //PipelineLayouts
         if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create pipeline layout!");
         }
@@ -546,7 +870,7 @@ private:
         }
     }
 
-    //Создание swapchain
+    //Создание swap chain
     void createSwapChain() {
         SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice);
 
@@ -603,6 +927,22 @@ private:
         swapChainImageFormat = surfaceFormat.format;
         swapChainExtent = extent;
     }
+
+    //Пересоздание swap chain
+    void recreateSwapChain() {
+        vkDeviceWaitIdle(device);
+
+        createSwapChain();
+        createImageViews();
+        createRenderPass();
+        createGraphicsPipeline();
+        createFramebuffers();
+        createUniformBuffers();
+        createDescriptorPool();
+        createDescriptorSets();
+        createCommandBuffers();
+    }
+
 
     //Создание surface
     void createSurface() {
@@ -796,6 +1136,9 @@ private:
         //Отметка участия image в текущем кадре
         imagesInFlight[imageIndex] = inFlightFences[currentFrame];
 
+        //Обновление uniform-буфера
+        updateUniformBuffer(imageIndex);
+
         //Запуск соответствующего буфера команд для этого image
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -837,6 +1180,25 @@ private:
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;   //Переход к следующему кадру
     }
 
+    //Обновление uniform-буфера
+    void updateUniformBuffer(uint32_t currentImage) {
+        static auto startTime = std::chrono::high_resolution_clock::now();
+        //Вычисление прошедшего времени
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+        //Трансформация
+        UniformBufferObject ubo{};
+        ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+        ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+        ubo.proj = glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 10.0f);
+        ubo.proj[1][1] *= -1;
+        //Передача данных в uniform буфер
+        void* data;
+        vkMapMemory(device, uniformBuffersMemory[currentImage], 0, sizeof(ubo), 0, &data);
+        memcpy(data, &ubo, sizeof(ubo));
+        vkUnmapMemory(device, uniformBuffersMemory[currentImage]);
+    }
+
     //Главный цикл
     void mainLoop() {
         while (!glfwWindowShouldClose(window)) {
@@ -846,23 +1208,46 @@ private:
         vkDeviceWaitIdle(device);   //Ожидание завершения всех логических операций устройства
     }
 
+    //Уничтожение swap chain
+    void cleanupSwapChain() {
+        for (size_t i = 0; i < swapChainFramebuffers.size(); i++) {
+            vkDestroyFramebuffer(device, swapChainFramebuffers[i], nullptr);    //Уничтожение фреймбуферов
+        }
+
+        vkFreeCommandBuffers(device, commandPool, static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data()); //Освобождение командных буферов
+
+        vkDestroyPipeline(device, graphicsPipeline, nullptr);   //Уничтожение графического конвейера
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);   //Уничтожение конвейера 
+        vkDestroyRenderPass(device, renderPass, nullptr);   //Уничтожение прохода рендера
+
+        for (auto imageView : swapChainImageViews) {
+            vkDestroyImageView(device, imageView, nullptr); //Уничтожение image view
+        }
+
+        vkDestroySwapchainKHR(device, swapChain, nullptr);  //Уничтожение swap chain
+
+        for (size_t i = 0; i < swapChainImages.size(); i++) {
+            vkDestroyBuffer(device, uniformBuffers[i], nullptr);    //Уничтожение uniform-буфера
+            vkFreeMemory(device, uniformBuffersMemory[i], nullptr);
+        }
+        vkDestroyDescriptorPool(device, descriptorPool, nullptr);   //Уничтожение пула дескрипторов
+    }
+
     //Освобождение ресурсов
     void cleanup() {
+        cleanupSwapChain(); //Уничтожение swap chain
+        vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr); //Уничтожение layout дескрипторов
+        vkDestroyBuffer(device, vertexBuffer, nullptr); //Уничтожение вершинного буфера
+        vkFreeMemory(device, vertexBufferMemory, nullptr);  //Освобождение памяти, занятой вершинным буфером
+        vkDestroyBuffer(device, indexBuffer, nullptr);  //Уничтожение индексного буфера
+        vkFreeMemory(device, indexBufferMemory, nullptr);   //Освобождение памяти, занятой индексным буфером
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
             vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);   //Уничтожение семафоров
             vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
             vkDestroyFence(device, inFlightFences[i], nullptr); //Уничтожение барьеров
         }   
         vkDestroyCommandPool(device, commandPool, nullptr); //Уничтожение пула команд
-        for (auto framebuffer : swapChainFramebuffers) {
-            vkDestroyFramebuffer(device, framebuffer, nullptr); //Уничтожение фреймбуферов
-        }   
-        vkDestroyPipeline(device, graphicsPipeline, nullptr); //Уничтожение графического конвейера
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);   //Уничтожение конвейера 
-        vkDestroyRenderPass(device, renderPass, nullptr);   //Уничтожение прохода рендера
-        for (auto imageView : swapChainImageViews) {
-            vkDestroyImageView(device, imageView, nullptr); //Уничтожение image view
-        }
+
         if (enableValidationLayers) {
             DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
         }
@@ -870,7 +1255,6 @@ private:
         vkDestroyInstance(instance, nullptr);   //Уничтожение экземпляра Vulkan API
         glfwDestroyWindow(window);  //Уничтожение окна
         glfwTerminate();    //Уничтожение GLFW
-        vkDestroySwapchainKHR(device, swapChain, nullptr);
         vkDestroyDevice(device, nullptr);   //Уничтожение логического устройства
     }
 
