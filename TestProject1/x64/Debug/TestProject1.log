@@ -1,3 +1,3 @@
 ﻿  Main.cpp
-C:\Users\lenik\source\repos\TestProject1\TestProject1\Main.cpp(941,20): warning C4101: graphicsPipeline: неиспользованная локальная переменная
+C:\Users\lenik\source\repos\TestProject1\TestProject1\Main.cpp(1024,20): warning C4101: graphicsPipeline: неиспользованная локальная переменная
   TestProject1.vcxproj -> C:\Users\lenik\source\repos\TestProject1\x64\Debug\TestProject1.exe

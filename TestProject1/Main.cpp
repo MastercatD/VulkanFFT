@@ -96,6 +96,7 @@ private:
     struct Vertex {
         glm::vec2 pos;
         glm::vec3 color;
+        glm::vec2 texCoord;
         //Информация о передаче данных в вершинный шейдер
         static VkVertexInputBindingDescription getBindingDescription() {
             VkVertexInputBindingDescription bindingDescription{};
@@ -107,8 +108,8 @@ private:
         }
 
         //Интерпретация переданных данных
-        static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions() {
-            std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+        static std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions() {
+            std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
             //Позиция
             attributeDescriptions[0].binding = 0;   //Привязка поступающих данных в вершину
             attributeDescriptions[0].location = 0;  //Директива location в вершинном шейдере
@@ -119,6 +120,11 @@ private:
             attributeDescriptions[1].location = 1;
             attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
             attributeDescriptions[1].offset = offsetof(Vertex, color);
+            //Текстура
+            attributeDescriptions[2].binding = 0;
+            attributeDescriptions[2].location = 2;
+            attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+            attributeDescriptions[2].offset = offsetof(Vertex, texCoord);
 
             return attributeDescriptions;
         }
@@ -164,12 +170,14 @@ private:
     VkDescriptorPool descriptorPool;    //Пул дескрипторов
     std::vector<VkDescriptorSet> descriptorSets;    //Сеты дескрипторов
     VkImage textureImage;   //Текстура
+    VkImageView textureImageView;   //Image view
+    VkSampler textureSampler;   //Семплер
     VkDeviceMemory textureImageMemory;  //Память для текстуры
     const std::vector<Vertex> vertices = {  //Данные вершин
-    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+     {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}
     };
     const std::vector<uint16_t> indices = { //Индексы вершин
     0, 1, 2, 2, 3, 0
@@ -221,6 +229,8 @@ private:
         createFramebuffers();    //Создание фреймбуфера
         createCommandPool();    //Создание пула команд
         createTextureImage();   //Создание текстуры
+        createTextureImageView();   //Создание Image view для изображения
+        createTextureSampler(); //Создание семплера
         createVertexBuffer();    //Создание буфера вершин
         createUniformBuffers(); //Создание uniform-буфера
         createDescriptorPool(); //Создание пула дескрипторов
@@ -228,6 +238,55 @@ private:
         createIndexBuffer();    //Создание индексного буфера 
         createCommandBuffers();  //Создание буфера команд
         createSyncObjects(); //Создание барьеров и семафоров для синхронизации
+    }
+
+    //Сэмплер
+    void createTextureSampler() {
+        //Фильтры и трансформации семплера
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        //Оси
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        //Анизотропная фильтрация
+        samplerInfo.anisotropyEnable = VK_TRUE;
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+        samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+        samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK; //Цвет пустой области
+        samplerInfo.unnormalizedCoordinates = VK_FALSE; //Система координат
+        samplerInfo.compareEnable = VK_FALSE;
+        samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerInfo.mipLodBias = 0.0f;
+        samplerInfo.minLod = 0.0f;
+        samplerInfo.maxLod = 0.0f;
+        //Создание семплера
+        if (vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create texture sampler!");
+        }
+    }
+
+    void createTextureImageView() {
+        VkImageViewCreateInfo viewInfo{};   //Параметры для создания image
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = textureImage;
+        //Интерпретация image
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+        //Описание используемой части image
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+        //Создание image view
+        if (vkCreateImageView(device, &viewInfo, nullptr, &textureImageView) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create texture image view!");
+        }
     }
 
     void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
@@ -451,18 +510,30 @@ private:
             bufferInfo.buffer = uniformBuffers[i];
             bufferInfo.offset = 0;
             bufferInfo.range = sizeof(UniformBufferObject);
+            //Семплер
+            VkDescriptorImageInfo imageInfo{};
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfo.imageView = textureImageView;
+            imageInfo.sampler = textureSampler;
+            //Uniform
+            std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+            descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[0].dstSet = descriptorSets[i]; //Сет дескрипторов
+            descriptorWrites[0].dstBinding = 0; //Привязка
+            descriptorWrites[0].dstArrayElement = 0;
+            descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; //Тип дескриптора
+            descriptorWrites[0].descriptorCount = 1; //Количество элементов, которые необходимо обновить
+            descriptorWrites[0].pBufferInfo = &bufferInfo;  //Для дескрипторов, ссылающихся на данные буфера
+            //Семплер
+            descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[1].dstSet = descriptorSets[i];
+            descriptorWrites[1].dstBinding = 1;
+            descriptorWrites[1].dstArrayElement = 0;
+            descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[1].descriptorCount = 1;
+            descriptorWrites[1].pImageInfo = &imageInfo;
 
-            VkWriteDescriptorSet descriptorWrite{};
-            descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrite.dstSet = descriptorSets[i]; //Сет дескрипторов
-            descriptorWrite.dstBinding = 0; //Привязка
-            descriptorWrite.dstArrayElement = 0;
-            descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; //Тип дескриптора
-            descriptorWrite.descriptorCount = 1; //Количество элементов, которые необходимо обновить
-            descriptorWrite.pBufferInfo = &bufferInfo;  //Для дескрипторов, ссылающихся на данные буфера
-            descriptorWrite.pImageInfo = nullptr; //Для дескрипторов, ссылающихся на данные image
-            descriptorWrite.pTexelBufferView = nullptr; //Для дескрипторов, ссылающихся на данные buffer view
-            vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);    //Обновление настроек сета дескрипторов
+            vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);    //Обновление настроек сета дескрипторов
         }
 
     
@@ -470,15 +541,19 @@ private:
 
     //Пул дескрипторов
     void createDescriptorPool() {
+
         //Описание пула дескрипторов
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;  //Тип дескрипторов
-        poolSize.descriptorCount = static_cast<uint32_t>(swapChainImages.size());   //Количество дескрипторов
+        std::array<VkDescriptorPoolSize, 2> poolSizes{};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;  //Тип дескриптора 1
+        poolSizes[0].descriptorCount = static_cast<uint32_t>(swapChainImages.size()); //Количество
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;  //Тип дескриптора 2
+        poolSizes[1].descriptorCount = static_cast<uint32_t>(swapChainImages.size());
+
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
-        poolInfo.maxSets = static_cast<uint32_t>(swapChainImages.size());   //Маскимальное количество сетов дескрипторов
+        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+        poolInfo.pPoolSizes = poolSizes.data();
+        poolInfo.maxSets = static_cast<uint32_t>(swapChainImages.size());  //Маскимальное количество сетов дескрипторов
         //Создание пула дескрипторов
         if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
             throw std::runtime_error("failed to create descriptor pool!");
@@ -499,9 +574,9 @@ private:
         }
     }
     
-    //Layout дескриптор
+    //Сет layout дескрипторов
     void createDescriptorSetLayout() {
-        //Описание привязки
+        //Описание униформ буфера
         VkDescriptorSetLayoutBinding uboLayoutBinding{};
         uboLayoutBinding.binding = 0;   //
         uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;    //Тип дескриптора
@@ -509,13 +584,21 @@ private:
 
         uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;   //Этапы шейдера, где упоминается дескриптор
         uboLayoutBinding.pImmutableSamplers = nullptr; // Optional  
-
+        
+        //Описание семплера
+        VkDescriptorSetLayoutBinding samplerLayoutBinding{};
+        samplerLayoutBinding.binding = 1;
+        samplerLayoutBinding.descriptorCount = 1;
+        samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        samplerLayoutBinding.pImmutableSamplers = nullptr;
+        samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
         //Описание массива привязок
+        std::array<VkDescriptorSetLayoutBinding, 2> bindings = { uboLayoutBinding, samplerLayoutBinding };
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 1;
-        layoutInfo.pBindings = &uboLayoutBinding;
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
         //Создание массива привязок
         if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create descriptor set layout!");
@@ -1171,7 +1254,7 @@ private:
         queueCreateInfo.pQueuePriorities = &queuePriority;
         */
         VkPhysicalDeviceFeatures deviceFeatures{};
-
+        deviceFeatures.samplerAnisotropy = VK_TRUE;
         
         VkDeviceCreateInfo createInfo{};    //Структура с информацией об очередях и возможностях устройства
         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -1407,7 +1490,9 @@ private:
 
     //Освобождение ресурсов
     void cleanup() {
+        vkDestroySampler(device, textureSampler, nullptr);  //Уничтожение семплера
         cleanupSwapChain(); //Уничтожение swap chain
+        vkDestroyImageView(device, textureImageView, nullptr);  //Уничтожение image view
         vkDestroyImage(device, textureImage, nullptr);  //Уничтожение image
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr); //Уничтожение layout дескрипторов
         vkDestroyBuffer(device, vertexBuffer, nullptr); //Уничтожение вершинного буфера
