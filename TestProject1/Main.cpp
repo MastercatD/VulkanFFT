@@ -375,6 +375,7 @@ private:
 
     //Текстура
     void createTextureImage() {
+        // Загрузка изображения
         int texWidth, texHeight, texChannels;   //Ширина, высота, количество каналов
         stbi_uc* pixels = stbi_load("images/image.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);   //Получаем указатель на первый пиксель
         VkDeviceSize imageSize = texWidth * texHeight * 4;  
@@ -1443,9 +1444,9 @@ private:
         float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
         //Трансформация
         UniformBufferObject ubo{};
-        ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-        ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-        ubo.proj = glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 10.0f);
+        ubo.model = glm::rotate(glm::mat4(1.0f), glm::radians(0.0f), glm::vec3(0.0f, 1.0f, 1.0f));
+        ubo.view = glm::lookAt(glm::vec3(0.0f, 0.0f, 1.5f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f));
+        ubo.proj = glm::perspective(glm::radians(45.0f), (float)swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 10.0f);
         ubo.proj[1][1] *= -1;
         //Передача данных в uniform буфер
         void* data;
