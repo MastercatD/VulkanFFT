@@ -9,22 +9,19 @@ layout(binding = 1) uniform sampler2D texSampler;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    vec4 intensive = texture(texSampler ,fragTexCoord + 0.5f);
-    if (fragTexCoord.x >= 0.5f) {
-        if (fragTexCoord.y >= 0.5f) {
-            //intensive = texture(texSampler ,fragTexCoord + 0.5f);
-            outColor = vec4(intensive[0], 0, 0, 1.0f);
-        } else {
-            //intensive = texture(texSampler ,fragTexCoord + 0.5f);
-            outColor = vec4(0, intensive[1], 0, 1.0f);
-        } 
-    } else {
-        if (fragTexCoord.y >= 0.5f) {
-            //intensive = texture(texSampler ,fragTexCoord + 0.5f);
-            outColor = vec4(0, 0, intensive[2], 1.0f);
-        } else {
-            //intensive = texture(texSampler ,fragTexCoord + 0.5f);
-            outColor = vec4(intensive);  
-        } 
+    float Re = 0, Im = 0, summaRe = 0, summaIm = 0, Arg = 0;
+    float i = fragTexCoord.x * 512;
+    for(int j = 0; j < 512; j++) {
+        Arg = 2.0 * 3.14 * j * i / 512.0f;
+        vec4 pixel = texture(texSampler ,vec2(i,fragTexCoord.y * 512));
+        float intensive = sqrt(pixel[0]*pixel[0] * pixel[1]*pixel[1] * pixel[2]* pixel[2]);
+        Re = cos(Arg)*intensive;
+        Im = sin(Arg)*intensive;
+        summaRe = summaRe + Re;
+        summaIm = summaIm + Im;
     }
+    float module = sqrt(summaRe*summaRe + summaIm*summaIm);
+    outColor = vec4(module, module, module, 1.0f);
+        
+    
 }
