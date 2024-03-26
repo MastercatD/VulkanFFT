@@ -380,7 +380,7 @@ private:
     void createTextureImage() {
         // Загрузка изображения
         int texWidth, texHeight, texChannels;   //Ширина, высота, количество каналов
-        stbi_uc* pixels = stbi_load("images/image.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);   //Получаем указатель на первый пиксель
+        stbi_uc* pixels = stbi_load("images/Hologram4096x4096.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);   //Получаем указатель на первый пиксель
         VkDeviceSize imageSize = texWidth * texHeight * 4;  
         
         if (!pixels) {
@@ -1105,7 +1105,7 @@ private:
         swapChainImageViews.resize(swapChainImages.size()); //Выделение места в контейнере
         //Обход всех image в swap chain
         for (size_t i = 0; i < swapChainImages.size(); i++) {
-            VkImageViewCreateInfo createInfo{}; //Параметры для создания шьфпу
+            VkImageViewCreateInfo createInfo{}; //Параметры для создания image
             createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
             createInfo.image = swapChainImages[i];
             //Интерпритация image
